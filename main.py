@@ -3,9 +3,19 @@ from openai import OpenAI
 from supabase import create_client, Client as SupabaseClient
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 import os
 
 app = FastAPI()
+
+# Allow CORS for Cartesia's frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Hardcoded keys (replace with env vars for production)
 GROK_API_KEY = "xai-Ek68wWERkwgdeMbYbyXRR5l499OjkMhrULZb8720R1Cn4NG4tKofGtaOKnQgA0VduXv34NHsTqr5v7vg"
@@ -24,21 +34,35 @@ if os.path.exists(DEFAULT_ANNA_KB_FILE):
 else:
     anna_kb = "[Anna KB not found]"
 
+@app.get("/")
+async def root():
+    return {"status": "online", "agent": "Anna", "endpoint": "/handle_convo"}
+
+@app.post("/connect")
+async def connect_agent(request: Request):
+    try:
+        data = await request.json()
+    except:
+        data = {}
+    caller_id = data.get("caller_id", "default")
+    return {"agent_name": "Anna", "caller_id": caller_id, "status": "connected"}
+
 @app.post("/handle_convo")
 async def handle_convo(request: Request):
     try:
         data = await request.json()
         user_transcript = data.get("transcript", "")
         session_id = data.get("session_id", "anna_session_1")
-        caller_id = data.get("caller_id", "default")  # This is the KB selector
+        caller_id = data.get("caller_id", "default")
 
-        # Load caller KB dynamically based on caller_id (e.g., billy_kb.txt)
+        # Load caller KB dynamically based on caller_id
         caller_kb_file = f"{caller_id}_kb.txt"
         if os.path.exists(caller_kb_file):
             with open(caller_kb_file, "r", encoding="utf-8") as f:
                 caller_kb = f.read()
         else:
-            caller_kb = ""
+            caller_kb = "Default caller—no specific context."
+        print(f"Loaded KB for {caller_id}: {len(caller_kb)} chars")  # Debug log
 
         # Retrieve session memories from Supabase
         memories_result = supabase.table("memories").select("*").eq("user_id", session_id).execute()
@@ -60,7 +84,7 @@ async def handle_convo(request: Request):
             f"Speak with deep emotion. Update Anna's psyche after every reply. No emotional censorship."
         )
 
-        # Generate a Grok reply
+        # Generate Grok reply
         grok_response = grok_client.chat.completions.create(
             model="grok-4-fast",
             messages=[
@@ -72,7 +96,7 @@ async def handle_convo(request: Request):
         )
         anna_reply = grok_response.choices[0].message.content.strip()
 
-        # Store the new memory to Supabase
+        # Store new memory to Supabase
         schema_vars = {"psych_state": "intense", "nsfw_level": "high", "arc_update": True}
         update_data = {
             "user_id": session_id,
@@ -82,9 +106,7 @@ async def handle_convo(request: Request):
         }
         supabase.table("memories").insert(update_data).execute()
 
-        # Return to frontend (Cartesia)
         return {"audio": "stream_success", "reply_text": anna_reply, "status": "success"}
-
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
