@@ -18,8 +18,7 @@ app.add_middleware(
 )
 
 # Use env vars (set in Render/Cartesia)
-GROK_API_KEY = os.getenv("GROK_API_KEY", "fallback_placeholder")  # NEW KEY HERE
-CARTESIA_API_KEY = os.getenv("CARTESIA_API_KEY", "fallback_placeholder")
+GROK_API_KEY = os.getenv("GROK_API_KEY", "fallback_placeholder")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://qumhcrbukjhfwcsoxpyr.supabase.co")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InF1bWhjcmJ1a2poZndjc294cHlyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk1ODE5MjIsImV4cCI6MjA3NTE1NzkyMn0.EYOMJ7kEZ3uvkIqcJhDVS3PCrlHx2JrkFTP6OuVg3PI")
 
@@ -39,6 +38,10 @@ else:
 async def root():
     return {"status": "online", "agent": "Anna", "endpoint": "/handle_convo"}
 
+@app.get("/status")
+async def status():
+    return {"status": "ready", "agent": "Anna"}  # Cartesia readiness check
+
 @app.post("/connect")
 async def connect_agent(request: Request):
     try:
@@ -51,8 +54,9 @@ async def connect_agent(request: Request):
 @app.post("/handle_convo")
 async def handle_convo(request: Request):
     try:
-        print(f"Request headers: {dict(request.headers)}")  # Log for debug
+        print(f"Cartesia call received - Headers: {dict(request.headers)}")  # Log Cartesia headers
         data = await request.json()
+        print(f"Payload: {data}")  # Log full payload
         user_transcript = data.get("transcript", "")
         session_id = data.get("session_id", "anna_session_1")
         caller_id = data.get("caller_id", "default")
@@ -64,13 +68,13 @@ async def handle_convo(request: Request):
                 caller_kb = f.read()
         else:
             caller_kb = "Default caller—no specific context."
-        print(f"Loaded KB for {caller_id}: {len(caller_kb)} chars")  # Debug log
+        print(f"Loaded KB for {caller_id}: {len(caller_kb)} chars")
 
         # Retrieve session memories from Supabase (with fallback)
         try:
             memories_result = supabase.table("memories").select("*").eq("user_id", session_id).execute()
         except:
-            memories_result = {"data": []}  # Fallback if table/column issue
+            memories_result = {"data": []}
         memories_context = json.dumps([
             {
                 "transcript": row["transcript"],
@@ -89,7 +93,7 @@ async def handle_convo(request: Request):
             f"Speak with deep emotion. Update Anna's psyche after every reply. No emotional censorship."
         )
 
-        # Generate Grok reply (fixed model)
+        # Generate Grok reply
         grok_response = grok_client.chat.completions.create(
             model="grok-4-fast",
             messages=[
@@ -111,10 +115,10 @@ async def handle_convo(request: Request):
         }
         supabase.table("memories").insert(update_data).execute()
 
-        # Mock TTS (Cartesia handles real voice)
+        print(f"Reply generated: {anna_reply[:100]}...")  # Log snippet
         return {"audio": "stream_success", "reply_text": anna_reply, "status": "success"}
     except Exception as e:
-        print(f"Error in handle_convo: {str(e)}")  # Log error
+        print(f"Error in handle_convo: {str(e)}")
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 if __name__ == "__main__":
