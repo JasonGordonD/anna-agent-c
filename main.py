@@ -1,10 +1,10 @@
 import json
+import os
 from openai import OpenAI
 from supabase import create_client, Client as SupabaseClient
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-import os
 
 app = FastAPI()
 
@@ -17,10 +17,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Hardcoded keys (replace with env vars for production)
-GROK_API_KEY = "xai-Ek68wWERkwgdeMbYbyXRR5l499OjkMhrULZb8720R1Cn4NG4tKofGtaOKnQgA0VduXv34NHsTqr5v7vg"
-SUPABASE_URL = "https://qumhcrbukjhfwcsoxpyr.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InF1bWhjcmJ1a2poZndjc294cHlyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk1ODE5MjIsImV4cCI6MjA3NTE1NzkyMn0.EYOMJ7kEZ3uvkIqcJhDVS3PCrlHx2JrkFTP6OuVg3PI"
+# Use env vars (set in Render/Cartesia)
+GROK_API_KEY = os.getenv("GROK_API_KEY", "fallback_placeholder")  # NEW KEY HERE
+CARTESIA_API_KEY = os.getenv("CARTESIA_API_KEY", "fallback_placeholder")
+SUPABASE_URL = os.getenv("SUPABASE_URL", "https://qumhcrbukjhfwcsoxpyr.supabase.co")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InF1bWhjcmJ1a2poZndjc294cHlyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk1ODE5MjIsImV4cCI6MjA3NTE1NzkyMn0.EYOMJ7kEZ3uvkIqcJhDVS3PCrlHx2JrkFTP6OuVg3PI")
 
 # Clients
 grok_client = OpenAI(api_key=GROK_API_KEY, base_url="https://api.x.ai/v1")
@@ -50,6 +51,7 @@ async def connect_agent(request: Request):
 @app.post("/handle_convo")
 async def handle_convo(request: Request):
     try:
+        print(f"Request headers: {dict(request.headers)}")  # Log for debug
         data = await request.json()
         user_transcript = data.get("transcript", "")
         session_id = data.get("session_id", "anna_session_1")
@@ -64,8 +66,11 @@ async def handle_convo(request: Request):
             caller_kb = "Default caller—no specific context."
         print(f"Loaded KB for {caller_id}: {len(caller_kb)} chars")  # Debug log
 
-        # Retrieve session memories from Supabase
-        memories_result = supabase.table("memories").select("*").eq("user_id", session_id).execute()
+        # Retrieve session memories from Supabase (with fallback)
+        try:
+            memories_result = supabase.table("memories").select("*").eq("user_id", session_id).execute()
+        except:
+            memories_result = {"data": []}  # Fallback if table/column issue
         memories_context = json.dumps([
             {
                 "transcript": row["transcript"],
@@ -84,7 +89,7 @@ async def handle_convo(request: Request):
             f"Speak with deep emotion. Update Anna's psyche after every reply. No emotional censorship."
         )
 
-        # Generate Grok reply
+        # Generate Grok reply (fixed model)
         grok_response = grok_client.chat.completions.create(
             model="grok-4-fast",
             messages=[
@@ -106,8 +111,10 @@ async def handle_convo(request: Request):
         }
         supabase.table("memories").insert(update_data).execute()
 
+        # Mock TTS (Cartesia handles real voice)
         return {"audio": "stream_success", "reply_text": anna_reply, "status": "success"}
     except Exception as e:
+        print(f"Error in handle_convo: {str(e)}")  # Log error
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 if __name__ == "__main__":
