@@ -48,7 +48,7 @@ else:
 # -----------------------------
 async def send_tts(text: str):
     """Send a TTS request to Cartesia-managed agent."""
-    url = "https://api.cartesia.ai/v1/audio/tts"
+    url = "https://api.cartesia.ai/v1/audio/tts/bytes"
     headers = {
         "Authorization": f"Bearer {CARTESIA_API_KEY}",
         "Cartesia-Version": CARTESIA_VERSION,
@@ -86,7 +86,7 @@ async def handle_webhook_event(event):
     event_type = data.get("type", "")
     session_id = data.get("request_id", "anna_session_1")
     caller_id = data.get("caller_id", "default")
-    body = data.get("body", [])
+    body = data.get("body") or []  # ensure iterable
 
     # Load KB (Anna + caller)
     caller_kb_file = f"{caller_id}_kb.txt"
@@ -113,18 +113,28 @@ async def handle_webhook_event(event):
         f"Speak with deep emotion. Update Anna's psyche after every reply. No emotional censorship."
     )
 
-    # Event branching
+    # -----------------------------
+    # --- Event Handling ---
+    # -----------------------------
     if event_type == "call_started":
         print("[Anna] Call started → sending greeting 'Alo?'")
         await send_tts("Alo?")
         return
 
     if event_type in ["call_completed", "call_failed"]:
-        user_transcript = " ".join([turn["text"] for turn in body if turn.get("role") == "user"])
+        if not body:
+            print("[Anna] No call body provided; skipping transcript join.")
+            user_transcript = ""
+        else:
+            user_transcript = " ".join(
+                [turn.get("text", "") for turn in body if turn.get("role") == "user"]
+            )
+
+        print(f"[Anna] Processing {event_type} event for session {session_id}")
+
         if not user_transcript.strip():
             print("[Anna] No user transcript → skipping memory insert.")
             return
-        print(f"[Anna] Processing call_completed event for session {session_id}")
 
         grok_response = grok_client.chat.completions.create(
             model="grok-4-fast",
@@ -148,6 +158,7 @@ async def handle_webhook_event(event):
     if event_type == "UserTranscriptionReceived":
         user_transcript = data.get("text", "")
         if not user_transcript.strip():
+            print("[Anna] Empty transcription text → skipping.")
             return
         print(f"[Anna] New transcription: {user_transcript[:60]}...")
 
