@@ -25,6 +25,7 @@ def _env(name: str, required: bool = True) -> str:
     return val
 
 CARTESIA_API_KEY = _env("CARTESIA_API_KEY")
+CARTESIA_VERSION = _env("CARTESIA_VERSION")  # Updated to use env var (e.g., 2025-04-16)
 LIVEKIT_URL = _env("LIVEKIT_URL")
 LIVEKIT_API_KEY = _env("LIVEKIT_API_KEY")
 LIVEKIT_API_SECRET = _env("LIVEKIT_API_SECRET")
@@ -116,7 +117,7 @@ async def send_tts_stream(text: str, pcm_sink: rtc.AudioSource):
     async with httpx.AsyncClient(timeout=30.0) as hc:
         headers = {
             "Authorization": f"Bearer {CARTESIA_API_KEY}",
-            "Cartesia-Version": "2025-04-16"
+            "Cartesia-Version": CARTESIA_VERSION  # Updated to use env var
         }
         r = await hc.post(
             "https://api.cartesia.ai/v1/tts/credentials",
@@ -182,6 +183,11 @@ async def handle_convo(payload: dict, request: Request):
     event_type = payload.get("type")
     req_id = payload.get("request_id", "unknown")
 
+    # Idempotency check: Skip if already processed
+    if supabase and supabase.table("memories").select("request_id").eq("request_id", req_id).execute().data:
+        log.info(f"[Webhook] Skipping duplicate request_id: {req_id}")
+        return {"status": "ignored"}
+
     if event_type == "call_started":
         log.info(f"[Webhook] Handling event 'call_started' for {req_id}")
         _safe_log_event(req_id, "call_started")
@@ -206,7 +212,7 @@ async def handle_convo(payload: dict, request: Request):
     elif event_type == "call_completed":
         log.info(f"[Webhook] Handling event 'call_completed' for {req_id}")
         _safe_log_event(req_id, "call_completed")
-        await push_to_grok(req_id, "Mock transcript")
+        await push_to_grok(req_id, "Mock transcript")  # Consider replacing with real transcript
         return {"status": "completed"}
 
     return {"status": "ignored"}
