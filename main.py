@@ -9,10 +9,11 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 # ==========================================================
-#  Anna Agent – Cartesia-Managed LiveKit Edition
+#  Anna Agent – Cartesia-Managed LiveKit Edition (v2.2)
+#  Verified against Cartesia API docs (2025-04-16)
 # ==========================================================
 
-app = FastAPI(title="Anna Agent", version="2.0")
+app = FastAPI(title="Anna Agent", version="2.2")
 
 # -----------------------------
 # --- Middleware & Config ---
@@ -52,13 +53,16 @@ except FileNotFoundError:
     anna_kb = "[Anna KB not found]"
 
 # ==========================================================
-#  Helper: Cartesia TTS with Intelligent Fallback
+#  Helper: Cartesia TTS – aligned with documented Bytes API
 # ==========================================================
 async def send_tts(text: str) -> bool:
-    """Generate speech via Cartesia; retry across endpoint variants."""
+    """
+    Generate speech via Cartesia TTS (Bytes endpoint per docs).
+    Falls back to minimal legacy path if regional routing differs.
+    """
     endpoints = [
-        "https://api.cartesia.ai/v1/audio/tts/bytes",
-        "https://api.cartesia.ai/v1/tts",
+        "https://api.cartesia.ai/v1/audio/tts/bytes",  # Primary per API reference
+        "https://api.cartesia.ai/v1/tts/bytes",       # Legacy fallback
     ]
     headers = {
         "Authorization": f"Bearer {CARTESIA_API_KEY}",
@@ -80,14 +84,17 @@ async def send_tts(text: str) -> bool:
     async with httpx.AsyncClient(timeout=15) as client:
         for url in endpoints:
             try:
-                r = await client.post(url, headers=headers, json=payload)
-                if r.status_code == 200 and len(r.content) > 50:
+                response = await client.post(url, headers=headers, json=payload)
+                if response.status_code == 200 and len(response.content) > 50:
                     print(f"[Cartesia] ✅ TTS success via {url}: '{text[:50]}'")
                     return True
-                print(f"[Cartesia] ⚠️ {url} → {r.status_code} {r.text[:80]}")
+                else:
+                    print(f"[Cartesia] ⚠️ {url} → {response.status_code}: {response.text[:120]}")
             except Exception as e:
                 print(f"[Cartesia] ❌ Exception contacting {url}: {e}")
-        print("[Cartesia] ❌ All TTS endpoints failed.")
+
+        print("[Cartesia] ❌ All documented endpoints failed.")
+        print("[Cartesia] ℹ️ If your account uses real-time streaming, check /v1/tts/stream or /v1/tts/websocket in Cartesia docs.")
         return False
 
 # ==========================================================
@@ -142,63 +149,34 @@ async def handle_webhook_event(event: dict):
     if event_type == "call_started":
         print("[Anna] ▶ Call started — greeting 'Alo?'")
         await send_tts("Alo?")
-        # Log attempt in Supabase
         supabase.table("memories").insert(
-            {
-                "user_id": session_id,
-                "transcript": "",
-                "reply": "Alo?",
-                "schema_vars": {"event": "call_started"},
-            }
+            {"user_id": session_id, "transcript": "", "reply": "Alo?", "schema_vars": {"event": "call_started"}}
         ).execute()
         return
 
     if event_type in ("call_completed", "call_failed"):
-        if not body:
-            print("[Anna] No call body; logging empty transcript.")
-            user_transcript = ""
-        else:
-            user_transcript = " ".join(
-                [turn.get("text", "") for turn in body if turn.get("role") == "user"]
-            )
-
-        # Always log attempt
+        user_transcript = ""
+        if body:
+            user_transcript = " ".join([turn.get("text", "") for turn in body if turn.get("role") == "user"])
+        print(f"[Anna] 🧩 Processing {event_type} for {session_id}")
         supabase.table("memories").insert(
-            {
-                "user_id": session_id,
-                "transcript": user_transcript,
-                "reply": "",
-                "schema_vars": {"event": event_type},
-            }
+            {"user_id": session_id, "transcript": user_transcript, "reply": "", "schema_vars": {"event": event_type}}
         ).execute()
 
         if not user_transcript.strip():
-            print("[Anna] No user transcript → nothing to generate.")
+            print("[Anna] No user transcript → skipping reply generation.")
             return
 
-        print(f"[Anna] 🧩 Processing {event_type} for {session_id}")
         grok_response = grok_client.chat.completions.create(
             model="grok-4-fast",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_transcript},
-            ],
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_transcript}],
             max_tokens=450,
             temperature=0.85,
         )
         anna_reply = grok_response.choices[0].message.content.strip()
-        schema_vars = {
-            "psych_state": "intense",
-            "nsfw_level": "high",
-            "arc_update": True,
-        }
+        schema_vars = {"psych_state": "intense", "nsfw_level": "high", "arc_update": True}
         supabase.table("memories").insert(
-            {
-                "user_id": session_id,
-                "transcript": user_transcript,
-                "reply": anna_reply,
-                "schema_vars": schema_vars,
-            }
+            {"user_id": session_id, "transcript": user_transcript, "reply": anna_reply, "schema_vars": schema_vars}
         ).execute()
         print(f"[Anna] ✅ Stored memory: {anna_reply[:100]}")
         return
@@ -211,26 +189,14 @@ async def handle_webhook_event(event: dict):
         print(f"[Anna] 🎤 Transcription: {user_transcript[:60]}...")
         grok_response = grok_client.chat.completions.create(
             model="grok-4-fast",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_transcript},
-            ],
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_transcript}],
             max_tokens=450,
             temperature=0.85,
         )
         anna_reply = grok_response.choices[0].message.content.strip()
-        schema_vars = {
-            "psych_state": "intense",
-            "nsfw_level": "high",
-            "arc_update": True,
-        }
+        schema_vars = {"psych_state": "intense", "nsfw_level": "high", "arc_update": True}
         supabase.table("memories").insert(
-            {
-                "user_id": session_id,
-                "transcript": user_transcript,
-                "reply": anna_reply,
-                "schema_vars": schema_vars,
-            }
+            {"user_id": session_id, "transcript": user_transcript, "reply": anna_reply, "schema_vars": schema_vars}
         ).execute()
         print(f"[Anna] 💬 Reply: {anna_reply[:100]}")
         await send_tts(anna_reply)
