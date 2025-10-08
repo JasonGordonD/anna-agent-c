@@ -1,0 +1,22 @@
+# Python cache and virtual envs
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+env/
+venv/
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+
+# Node files (no longer needed)
+node_modules/
+package-lock.json
+package.json
+
+# Other
+*.log
+*.tmp
+.env
