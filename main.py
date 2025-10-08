@@ -1,16 +1,13 @@
 import os
 import json
 import asyncio
-import aiohttp
-import httpx
-import time
-from datetime import timedelta
 import logging
 from fastapi import FastAPI, Request, HTTPException
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from livekit import rtc
 from livekit.api import AccessToken, VideoGrants
+from livekit_plugins.cartesia import CartesiaSpeechSynthesizer  # Import plugin
 
 # ──────────────────────── CONFIG ────────────────────────
 load_dotenv(override=True)
@@ -25,7 +22,7 @@ def _env(name: str, required: bool = True) -> str:
     return val
 
 CARTESIA_API_KEY = _env("CARTESIA_API_KEY")
-CARTESIA_VERSION = _env("CARTESIA_VERSION")  # Updated to use env var (e.g., 2025-04-16)
+CARTESIA_VERSION = _env("CARTESIA_VERSION")  # e.g., 2025-04-16
 LIVEKIT_URL = _env("LIVEKIT_URL")
 LIVEKIT_API_KEY = _env("LIVEKIT_API_KEY")
 LIVEKIT_API_SECRET = _env("LIVEKIT_API_SECRET")
@@ -83,13 +80,11 @@ def _build_livekit_join_token(identity: str, room: str) -> str:
         can_subscribe=True,
         room=room
     )
-    
     token = AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET) \
         .with_identity(identity) \
         .with_grants(grants) \
         .with_ttl(timedelta(seconds=3600)) \
         .to_jwt()
-
     log.info(f"[LiveKit] 🎫 Token successfully generated for {identity}")
     return token
 
@@ -113,55 +108,25 @@ async def connect_livekit_room(identity="anna", room_name="anna"):
         raise
     return room, source
 
+# Use Cartesia plugin for TTS
 async def send_tts_stream(text: str, pcm_sink: rtc.AudioSource):
-    async with httpx.AsyncClient(timeout=30.0) as hc:
-        headers = {
-            "Authorization": f"Bearer {CARTESIA_API_KEY}",
-            "Cartesia-Version": CARTESIA_VERSION  # Updated to use env var
-        }
-        r = await hc.post(
-            "https://api.cartesia.ai/v1/tts/credentials",
-            headers=headers,
-        )
-        r.raise_for_status()
-        token = r.json()["token"]
-    log.info("[Cartesia] 🎫 Short-lived token acquired.")
-
-    ws_url = "wss://api.cartesia.ai/v1/audio/stream"
-    start_msg = {
-        "type": "start",
-        "output": {"format": "raw", "encoding": "pcm_s16le", "sample_rate": SAMPLE_RATE, "container": "raw"},
-        "voice": {"mode": "id", "id": "9c7dc287-1354-4fcc-a706-377f9a44e238"},
-        "input": {"type": "text", "text": text},
-    }
-
-    async with aiohttp.ClientSession() as session:
-        async with session.ws_connect(
-            ws_url,
-            headers={"Authorization": f"Bearer {token}"},
-            heartbeat=30.0,
-            autoping=True,
-            timeout=90.0,
-        ) as ws:
-            log.info("[Cartesia] 🔊 WebSocket TTS start")
-            await ws.send_str(json.dumps(start_msg))
-
-            async for msg in ws:
-                if msg.type == aiohttp.WSMsgType.BINARY:
-                    pcm_bytes = msg.data
-                    if pcm_bytes:
-                        frame = rtc.AudioFrame.from_pcm(
-                            pcm_bytes, sample_rate=SAMPLE_RATE, num_channels=NUM_CHANNELS
-                        )
-                        pcm_sink.capture_frame(frame)
-                elif msg.type == aiohttp.WSMsgType.TEXT:
-                    if "end" in msg.data:
-                        log.info("[Cartesia] ✅ Stream ended")
-                        break
-                elif msg.type == aiohttp.WSMsgType.ERROR:
-                    raise RuntimeError(f"Cartesia WebSocket error: {ws.exception()}")
-
-    log.info("[Cartesia] ✅ Stream complete.")
+    synthesizer = CartesiaSpeechSynthesizer(
+        api_key=CARTESIA_API_KEY,
+        version=CARTESIA_VERSION,
+        sample_rate=SAMPLE_RATE,
+        voice_id="9c7dc287-1354-4fcc-a706-377f9a44e238"  # Match your original
+    )
+    log.info("[Cartesia] 🔊 Initializing TTS synthesizer")
+    try:
+        await synthesizer.start(pcm_sink)
+        await synthesizer.speak(text)
+        log.info("[Cartesia] ✅ TTS stream completed")
+    except Exception as e:
+        log.error(f"[Cartesia] ❌ TTS synthesis failed: {str(e)}")
+        raise
+    finally:
+        await synthesizer.stop()
+        log.info("[Cartesia] ✅ Synthesizer stopped")
 
 # ──────────────────────── GROK ────────────────────────
 async def push_to_grok(session_id, transcript):
@@ -198,7 +163,7 @@ async def handle_convo(payload: dict, request: Request):
             room, source = await connect_livekit_room(identity="anna", room_name="anna")
             await send_tts_stream("Alo?", source)
         except Exception as e:
-            log.error(f"[LiveKit] ❌ Connection failed: {e}")
+            log.error(f"[LiveKit/Cartesia] ❌ Connection or TTS failed: {e}")
             raise
         finally:
             if room:
@@ -212,7 +177,7 @@ async def handle_convo(payload: dict, request: Request):
     elif event_type == "call_completed":
         log.info(f"[Webhook] Handling event 'call_completed' for {req_id}")
         _safe_log_event(req_id, "call_completed")
-        await push_to_grok(req_id, "Mock transcript")  # Consider replacing with real transcript
+        await push_to_grok(req_id, "Mock transcript")  # Replace with real transcript
         return {"status": "completed"}
 
     return {"status": "ignored"}

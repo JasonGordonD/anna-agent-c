@@ -6,10 +6,10 @@ aiohttp==3.13.0
 anyio==4.11.0
 cartesia==2.0.9
 supabase==2.22.0
-livekit==1.0.16
-livekit-api==1.0.6
+livekit==0.11.0  # Downgraded to match plugin
+livekit-api==1.0.6  # Keep this if compatible; may need downgrade too
 python-dotenv==1.1.1
 pydantic==2.12.0
 aiofiles==24.1.0
-numpy==2.0.1  # Downgraded for Python 3.10 compatibility
-
+numpy==2.0.1
+livekit-plugins-cartesia==0.1.0
