@@ -11,10 +11,10 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 # ==========================================================
-#  Anna Agent – Cartesia WebSocket Streaming Edition (v3.11)
+#  Anna Agent – Cartesia WebSocket Streaming Edition (v3.12)
 # ==========================================================
 
-app = FastAPI(title="Anna Agent", version="3.11")
+app = FastAPI(title="Anna Agent", version="3.12")
 
 app.add_middleware(
     CORSMiddleware,
@@ -54,7 +54,6 @@ except FileNotFoundError:
 #  Access Token for Streaming Auth
 # ==========================================================
 async def get_cartesia_token() -> str:
-    """Request a short-lived Cartesia access token (valid ~60 s)."""
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.post(
             "https://api.cartesia.ai/access-token",
@@ -74,32 +73,22 @@ async def get_cartesia_token() -> str:
 #  WebSocket TTS Streaming
 # ==========================================================
 async def send_tts_stream(text: str):
-    """Stream TTS audio via verified Cartesia WebSocket endpoint."""
     token = await get_cartesia_token()
     uri = "wss://api.cartesia.ai/tts/websocket"
     headers = {
         "Authorization": f"Bearer {token}",
         "Cartesia-Version": CARTESIA_VERSION,
     }
-
     context_id = f"ctx_{uuid.uuid4().hex}"
     payload = {
         "context_id": context_id,
-        "model_id": "sonic-2",  # per Cartesia spec
-        "voice": {
-            "mode": "id",
-            "id": "9c7dc287-1354-4fcc-a706-377f9a44e238"
-        },
-        "transcript": text,           # field name per API example
-        "output_format": {
-            "container": "raw",
-            "encoding": "pcm_s16le",
-            "sample_rate": 44100
-        },
+        "model_id": "sonic-2",
+        "voice": {"mode": "id", "id": "9c7dc287-1354-4fcc-a706-377f9a44e238"},
+        "transcript": text,
+        "output_format": {"container": "raw", "encoding": "pcm_s16le", "sample_rate": 44100},
         "continue": False,
-        "max_buffer_delay_ms": 500
+        "max_buffer_delay_ms": 500,
     }
-
     print(f"[Cartesia] 🔊 WebSocket TTS starting (context_id={context_id}) with payload: {payload}")
     try:
         async with websockets.connect(uri, additional_headers=headers) as ws:
@@ -120,6 +109,17 @@ async def handle_webhook_event(event: dict):
     body = data.get("body") or []
 
     print(f"[Webhook] Handling event '{event_type}' for {session_id}")
+
+    # ✅ Always log the event to Supabase immediately
+    try:
+        supabase.table("memories").insert({
+            "user_id": session_id,
+            "reply": f"[Event logged: {event_type}]",
+            "schema_vars": {"event": event_type}
+        }).execute()
+        print(f"[Supabase] ✅ Logged event: {event_type} for {session_id}")
+    except Exception as e:
+        print(f"[Supabase] ⚠️ Failed to log event: {e}")
 
     caller_kb_file = f"{caller_id}_kb.txt"
     if os.path.exists(caller_kb_file):
@@ -152,12 +152,6 @@ async def handle_webhook_event(event: dict):
             await send_tts_stream("Alo?")
         except Exception as e:
             print(f"[Cartesia] ❌ TTS Error: {e}")
-        supabase.table("memories").insert({
-            "user_id": session_id,
-            "transcript": "",
-            "reply": "Alo?",
-            "schema_vars": {"event": "call_started"},
-        }).execute()
         return
 
     if event_type == "UserTranscriptionReceived":
@@ -189,6 +183,7 @@ async def handle_webhook_event(event: dict):
             "reply": anna_reply,
             "schema_vars": {"psych_state": "intense", "nsfw_level": "high", "arc_update": True},
         }).execute()
+        print(f"[Supabase] ✅ Logged transcript for {session_id}")
 
         try:
             await send_tts_stream(anna_reply)
@@ -207,6 +202,7 @@ async def handle_webhook_event(event: dict):
             "reply": "",
             "schema_vars": {"event": event_type},
         }).execute()
+        print(f"[Supabase] ✅ Logged event completion for {session_id}")
         return
 
 # ==========================================================
