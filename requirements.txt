@@ -1,5 +1,9 @@
+fastapi
+uvicorn
 openai
 supabase
 requests
-fastapi
-uvicorn
+httpx
+python-dotenv
+livekit-api
+cartesia
