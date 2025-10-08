@@ -1,129 +1,125 @@
-🧠 Anna Agent — Cartesia Voice + Grok + Supabase Integration
+# 🧠 Anna Agent — Cartesia Voice + LiveKit + Supabase + Grok Integration
 
-Version: 3.12
-Author: Rami Yaacoub (PRMPT)
-Date: October 2025
-
-
----
-
-🚀 Overview
-
-Anna Agent is a real-time AI voice assistant built using:
-
-Cartesia AI — for low-latency speech synthesis (TTS) and speech transcription (STT).
-
-Grok (xAI) — for context-aware conversation generation and emotional continuity.
-
-Supabase — for memory persistence and event logging.
-
-Render — for hosting and webhook handling with async FastAPI endpoints.
-
-
-Anna acts as a psychologically complex digital persona. The assistant maintains session awareness and logs all events, transcripts, and responses, enabling persistent context across calls and reboots.
-
+**Version:** 5.0  
+**Author:** Rami Yaacoub (PRMPT)  
+**Date:** October 2025  
 
 ---
 
-🧩 System Architecture
+## 🚀 Overview
 
+Anna Agent is a **real-time AI voice assistant** powered by:
+
+- **Cartesia AI** — Low-latency speech synthesis (TTS) & transcription (STT)  
+- **LiveKit Cloud** — Real-time WebRTC audio transport for voice playback and streaming  
+- **Supabase** — Persistent memory and event logging  
+- **Grok API** — Conversational intelligence and post-session analytics  
+- **Render** — FastAPI-based cloud webhook and orchestration service  
+
+Anna acts as a psychologically complex digital persona capable of memory retention, emotional state awareness, and persistent conversational learning.
+
+---
+
+## 🧩 System Architecture
+
+```
  ┌────────────────────────┐
  │      Cartesia AI       │
- │  (WebSocket TTS/STT)   │
+ │   (TTS/STT Engine)     │
  └────────────┬───────────┘
               │
               ▼
  ┌─────────────────────────┐
- │        Render App       │
- │  main.py (FastAPI)      │
- │ - Receives Webhooks     │
- │ - Generates Replies     │
- │ - Streams TTS           │
- │ - Logs to Supabase      │
+ │        LiveKit          │
+ │ (Real-Time Voice Stream)│
  └────────────┬────────────┘
               │
               ▼
  ┌─────────────────────────┐
- │        Supabase         │
- │  (Memories Table)       │
- │ - Event Logs            │
- │ - Transcripts           │
- │ - Replies + States      │
+ │        Render App       │
+ │   main.py (FastAPI)     │
+ │  - Webhook Entry Point  │
+ │  - LiveKit Integration  │
+ │  - Supabase Logging     │
+ │  - Grok API Calls       │
+ │  - Sends Greeting "Alo?"│
+ └────────────┬────────────┘
+              │
+              ▼
+ ┌─────────────────────────┐
+ │       Supabase DB       │
+ │ (Memory + Event Store)  │
+ │ Logs Calls & Transcripts│
+ └────────────┬────────────┘
+              │
+              ▼
+ ┌─────────────────────────┐
+ │         Grok API        │
+ │  (Analytics & Insights) │
+ │ - Analyzes Sessions     │
+ │ - Generates Transcripts │
+ │ - Provides Agent Metrics│
+ │ - Enriches Memory Table │
  └─────────────────────────┘
-
-
----
-
-⚙️ Key Features
-
-🗣️ Real-Time Voice Synthesis
-
-Uses Cartesia’s wss://api.cartesia.ai/tts/websocket endpoint.
-
-Auto-generates temporary access tokens for low-latency streaming.
-
-Voice ID configured for Sonic-2 model.
-
-
-💬 Contextual AI Generation
-
-Integrates Grok (xAI) chat completions with a custom personality layer.
-
-Loads anna_kb.txt for persistent emotional, linguistic, and behavioral context.
-
-Dynamically fetches prior interactions from Supabase memory.
-
-
-🧾 Persistent Event Logging
-
-Every event (call start, transcript, reply, completion, or failure) is recorded.
-
-Supabase table memories includes:
-
-user_id TEXT,
-transcript TEXT,
-reply TEXT,
-schema_vars JSONB,
-created_at TIMESTAMP
-
-Automatically writes [Event logged: X] for diagnostic tracing.
-
-
-🪶 Asynchronous Webhooks
-
-Fully async FastAPI server using Uvicorn.
-
-Non-blocking Cartesia WebSocket handling.
-
-Renders voice and logs memory concurrently.
-
-
+```
 
 ---
 
-🧰 Project Requirements
+## ⚙️ Key Features
 
-Python 3.11+
+### 🗣️ Real-Time Voice (Cartesia + LiveKit)
+- Streams audio through `wss://anna-agent-6d5ebpqu.livekit.cloud`
+- Publishes mic input; plays Cartesia’s voice output in real time
+- Auto-greets the caller with **"Alo?"**
 
-Install dependencies:
+### 💾 Persistent Logging (Supabase)
+- Logs `call_started` and `call_completed` events  
+- Stores user_id, request_id, reply text, and session context  
+- Enables event-based querying for longitudinal analysis
 
-pip install -r requirements.txt
+### 📊 Conversational Analytics (Grok API)
+- Receives post-call payloads for sentiment, duration, and event analysis  
+- Generates **summaries**, **insight scores**, and **error heatmaps**  
+- Enriches Supabase memory entries with analytical fields  
+- Monitors Cartesia + LiveKit response timings and latency metrics
 
-Environment Variables
+### 🔁 Asynchronous Webhooks
+- Non-blocking FastAPI + asyncio  
+- Concurrent Cartesia ↔ LiveKit ↔ Grok calls  
+- Automatic logging and cleanup at `call_completed`
 
-Add these to your Render or .env file:
+---
 
-GROK_API_KEY=<your_xai_api_key>
-SUPABASE_URL=https://yourproject.supabase.co
-SUPABASE_KEY=<your_anon_key>
-CARTESIA_API_KEY=<your_cartesia_api_key>
-CARTESIA_VERSION=2025-04-16
-WEBHOOK_SECRET=anna-webhook-secret-2025
+## 🧰 Environment Variables
 
-Supabase Schema
+| Variable | Description |
+|-----------|--------------|
+| `SUPABASE_URL` | Supabase project URL |
+| `SUPABASE_KEY` | Supabase anon or service key |
+| `CARTESIA_API_KEY` | Cartesia API key |
+| `CARTESIA_VERSION` | Cartesia API version (`2025-04-16`) |
+| `LIVEKIT_URL` | `wss://anna-agent-6d5ebpqu.livekit.cloud` |
+| `LIVEKIT_API_KEY` | `APIzpqPcsPXTpZn` |
+| `LIVEKIT_API_SECRET` | `QMlJYZwji8DnLjeFiAvQyWGZmxseerwbuPxH2GobS3FA` |
+| `WEBHOOK_SECRET` | `anna-webhook-secret-2025` |
+| `GROK_API_KEY` | Auth token for Grok analytics |
+| `GROK_API_URL` | `https://api.grok.ai/v1/analytics` |
 
-Ensure a table named memories exists:
+---
 
+## 🧠 Pipeline Summary
+
+1. **Cartesia → LiveKit:** Streams synthesized voice output in real time.  
+2. **LiveKit → Render App:** Handles bi-directional voice exchange.  
+3. **Render → Supabase:** Logs conversation metadata and session data.  
+4. **Render → Grok API:** Sends conversation logs and analytics payloads.  
+5. **Grok → Supabase:** Writes enhanced memory data and conversation metrics.
+
+---
+
+## 🧩 Supabase Schema
+
+```sql
 create table memories (
   id bigint generated by default as identity primary key,
   created_at timestamp default now(),
@@ -132,127 +128,42 @@ create table memories (
   reply text,
   schema_vars jsonb,
   caller_id text,
-  user_id text
+  user_id text,
+  analytics jsonb
 );
-
-Enable RLS (Row-Level Security):
-
-ALTER TABLE memories ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "Allow anon inserts" ON memories
-FOR INSERT TO anon WITH CHECK (true);
-
+```
 
 ---
 
-🧠 Local Testing
+## 🧠 Grok API Example
 
-Run locally:
-
-python main.py
-
-Trigger a simulated Cartesia event:
-
-curl -X POST http://127.0.0.1:8000/handle_convo \
-  -H "x-webhook-secret: anna-webhook-secret-2025" \
-  -H "Content-Type: application/json" \
-  -d '{"type": "call_started", "request_id": "local_test"}'
-
-Example output:
-
-[Webhook] Handling event 'call_started' for local_test
-[Supabase] ✅ Logged event: call_started for local_test
-[Anna] ▶ Greeting: 'Alo?'
-[Cartesia] 🔊 WebSocket TTS starting (context_id=ctx_....)
-
+```python
+async def push_to_grok(session_id, transcript):
+    async with httpx.AsyncClient() as client:
+        payload = {"session_id": session_id, "transcript": transcript}
+        headers = {"Authorization": f"Bearer {os.getenv('GROK_API_KEY')}"}
+        await client.post(os.getenv("GROK_API_URL"), json=payload, headers=headers)
+```
 
 ---
 
-☁️ Deployment on Render
+## ☁️ Deployment (Render)
 
-1. Push the project to GitHub.
-
-2. Create a new Render Web Service.
-
-3. Set environment variables in Render dashboard.
-
-4. Deploy.
-
-5. Cartesia Webhook → https://yourapp.onrender.com/handle_convo
-
-6. Test via Cartesia Dashboard.
-
----
-
-🧩 File Structure
-
-anna-agent-c/
-├── main.py                 # FastAPI backend (core logic)
-├── anna_kb.txt             # Personality + knowledge base
-├── anna_Ionescu_kb.txt     # Caller-specific KB
-├── rami_kb.txt             # Developer context
-├── billy_kb.txt            # Alternate character context
-├── requirements.txt        # Dependencies
-├── Procfile                # Uvicorn runner for Render
-├── README.md               # Project documentation (this file)
-
+1. Push repo to GitHub  
+2. Create **Render Web Service** (FastAPI)  
+3. Add all environment variables (including Grok)  
+4. Deploy:
+   ```bash
+   uvicorn main:app --host 0.0.0.0 --port 8000
+   ```
+5. Cartesia → Webhook:
+   ```
+   https://anna-agent-c.onrender.com/handle_convo
+   ```
+6. Audio Transport → **LiveKit**, Room → `anna`
 
 ---
 
-🧪 Debugging Tips
-
-Use render logs to watch webhook events:
-
-render logs --service anna-agent-c
-
-If Cartesia fails TTS:
-Check for [Cartesia] 404 → indicates model or endpoint mismatch.
-
-If Supabase doesn’t log: Ensure SUPABASE_URL and SUPABASE_KEY match your project.
-
-To verify DB access:
-
-python - <<'PY'
-from supabase import create_client
-import os
-client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
-print(client.table("memories").select("*").execute())
-PY
-
-
-
----
-
-🧩 Key Variables
-
-Variable	Description
-
-anna_kb	Core identity and language model context for Anna
-system_prompt	Dynamic Grok persona construction
-session_id	Unique per-call identifier
-context_id	Cartesia WebSocket session token
-schema_vars	JSON tracking psych state, event, or NSFW level
-
-
-
----
-
-🧭 Roadmap
-
-[ ] Add full STT real-time handling for live speech transcription.
-
-[ ] Integrate error-event Supabase logging.
-
-[ ] Introduce persona switching (dynamic KB swapping).
-
-[ ] Expand multi-agent support (Billy, Millie, etc.).
-
-[ ] Add frontend voice chat client.
-
-
-
----
-
-⚖️ License
-
-This project is private intellectual property under PRMPT Studio.
+## ⚖️ License
+Private intellectual property of **PRMPT Studio**  
 All rights reserved © 2025.
