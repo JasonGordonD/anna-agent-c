@@ -8,7 +8,11 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI()
+# ==========================================================
+#  Anna Agent – Cartesia-Managed LiveKit Edition
+# ==========================================================
+
+app = FastAPI(title="Anna Agent", version="2.0")
 
 # -----------------------------
 # --- Middleware & Config ---
@@ -21,7 +25,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Environment Variables (Render)
+# -----------------------------
+# --- Environment Variables ---
+# -----------------------------
 GROK_API_KEY = os.getenv("GROK_API_KEY", "")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
@@ -29,29 +35,35 @@ CARTESIA_API_KEY = os.getenv("CARTESIA_API_KEY", "")
 CARTESIA_VERSION = os.getenv("CARTESIA_VERSION", "2025-04-16")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "anna-webhook-secret-2025")
 
-# Initialize clients
+# -----------------------------
+# --- Clients Initialization ---
+# -----------------------------
 grok_client = OpenAI(api_key=GROK_API_KEY, base_url="https://api.x.ai/v1")
 supabase: SupabaseClient = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # -----------------------------
-# --- Knowledge Base Load ---
+# --- Load Core Knowledge Base ---
 # -----------------------------
 DEFAULT_ANNA_KB_FILE = "anna_kb.txt"
-if os.path.exists(DEFAULT_ANNA_KB_FILE):
+try:
     with open(DEFAULT_ANNA_KB_FILE, "r", encoding="utf-8") as f:
         anna_kb = f.read()
-else:
+except FileNotFoundError:
     anna_kb = "[Anna KB not found]"
 
-# -----------------------------
-# --- Helper: Cartesia TTS ---
-# -----------------------------
-async def send_tts(text: str):
-    """Send a TTS request to Cartesia-managed agent."""
-    url = "https://api.cartesia.ai/v1/audio/tts/bytes"
+# ==========================================================
+#  Helper: Cartesia TTS with Intelligent Fallback
+# ==========================================================
+async def send_tts(text: str) -> bool:
+    """Generate speech via Cartesia; retry across endpoint variants."""
+    endpoints = [
+        "https://api.cartesia.ai/v1/audio/tts/bytes",
+        "https://api.cartesia.ai/v1/tts",
+    ]
     headers = {
         "Authorization": f"Bearer {CARTESIA_API_KEY}",
         "Cartesia-Version": CARTESIA_VERSION,
+        "Accept": "audio/wav",
         "Content-Type": "application/json",
     }
     payload = {
@@ -64,46 +76,57 @@ async def send_tts(text: str):
             "sample_rate": 44100,
         },
     }
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            response = await client.post(url, headers=headers, json=payload)
-            if response.status_code == 200 and len(response.content) > 50:
-                print(f"[Cartesia] TTS played successfully: '{text[:50]}'")
-                return True
-            else:
-                print(f"[Cartesia] TTS failed {response.status_code}: {response.text[:100]}")
-                return False
-    except Exception as e:
-        print(f"[Cartesia] TTS error: {str(e)}")
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        for url in endpoints:
+            try:
+                r = await client.post(url, headers=headers, json=payload)
+                if r.status_code == 200 and len(r.content) > 50:
+                    print(f"[Cartesia] ✅ TTS success via {url}: '{text[:50]}'")
+                    return True
+                print(f"[Cartesia] ⚠️ {url} → {r.status_code} {r.text[:80]}")
+            except Exception as e:
+                print(f"[Cartesia] ❌ Exception contacting {url}: {e}")
+        print("[Cartesia] ❌ All TTS endpoints failed.")
         return False
 
-# -----------------------------
-# --- Webhook Handler ---
-# -----------------------------
-async def handle_webhook_event(event):
-    """Handles Cartesia webhook events."""
+# ==========================================================
+#  Webhook Event Handler
+# ==========================================================
+async def handle_webhook_event(event: dict):
+    """Central processor for Cartesia webhooks."""
     data = event.get("data", event)
     event_type = data.get("type", "")
     session_id = data.get("request_id", "anna_session_1")
     caller_id = data.get("caller_id", "default")
-    body = data.get("body") or []  # ensure iterable
+    body = data.get("body") or []  # guarantee iterable
 
-    # Load KB (Anna + caller)
+    # ---- Load caller KB ----
     caller_kb_file = f"{caller_id}_kb.txt"
-    if os.path.exists(caller_kb_file):
+    try:
         with open(caller_kb_file, "r", encoding="utf-8") as f:
             caller_kb = f.read()
-    else:
+    except FileNotFoundError:
         caller_kb = "Default caller—no specific context."
 
     print(f"[Anna] Loaded KB for {caller_id} ({len(caller_kb)} chars)")
 
-    # Fetch prior memory
-    memories_result = supabase.table("memories").select("*").eq("user_id", session_id).execute()
-    memories_context = json.dumps(
-        [{"transcript": row["transcript"], "reply": row["reply"], "vars": row["schema_vars"]}
-         for row in memories_result.data]
-    )
+    # ---- Retrieve prior memory ----
+    try:
+        memories_result = supabase.table("memories").select("*").eq("user_id", session_id).execute()
+        memories_context = json.dumps(
+            [
+                {
+                    "transcript": r["transcript"],
+                    "reply": r["reply"],
+                    "vars": r["schema_vars"],
+                }
+                for r in memories_result.data
+            ]
+        )
+    except Exception as e:
+        print(f"[Supabase] ⚠️ Failed to fetch memory: {e}")
+        memories_context = "[]"
 
     system_prompt = (
         f"You are Anna, the raw, psychological protagonist from my NSFW novel.\n\n"
@@ -113,77 +136,109 @@ async def handle_webhook_event(event):
         f"Speak with deep emotion. Update Anna's psyche after every reply. No emotional censorship."
     )
 
-    # -----------------------------
-    # --- Event Handling ---
-    # -----------------------------
+    # ======================================================
+    #  Event-specific logic
+    # ======================================================
     if event_type == "call_started":
-        print("[Anna] Call started → sending greeting 'Alo?'")
+        print("[Anna] ▶ Call started — greeting 'Alo?'")
         await send_tts("Alo?")
+        # Log attempt in Supabase
+        supabase.table("memories").insert(
+            {
+                "user_id": session_id,
+                "transcript": "",
+                "reply": "Alo?",
+                "schema_vars": {"event": "call_started"},
+            }
+        ).execute()
         return
 
-    if event_type in ["call_completed", "call_failed"]:
+    if event_type in ("call_completed", "call_failed"):
         if not body:
-            print("[Anna] No call body provided; skipping transcript join.")
+            print("[Anna] No call body; logging empty transcript.")
             user_transcript = ""
         else:
             user_transcript = " ".join(
                 [turn.get("text", "") for turn in body if turn.get("role") == "user"]
             )
 
-        print(f"[Anna] Processing {event_type} event for session {session_id}")
+        # Always log attempt
+        supabase.table("memories").insert(
+            {
+                "user_id": session_id,
+                "transcript": user_transcript,
+                "reply": "",
+                "schema_vars": {"event": event_type},
+            }
+        ).execute()
 
         if not user_transcript.strip():
-            print("[Anna] No user transcript → skipping memory insert.")
+            print("[Anna] No user transcript → nothing to generate.")
             return
 
+        print(f"[Anna] 🧩 Processing {event_type} for {session_id}")
         grok_response = grok_client.chat.completions.create(
             model="grok-4-fast",
-            messages=[{"role": "system", "content": system_prompt},
-                      {"role": "user", "content": user_transcript}],
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_transcript},
+            ],
             max_tokens=450,
             temperature=0.85,
         )
         anna_reply = grok_response.choices[0].message.content.strip()
-        schema_vars = {"psych_state": "intense", "nsfw_level": "high", "arc_update": True}
-        update_data = {
-            "user_id": session_id,
-            "transcript": user_transcript,
-            "reply": anna_reply,
-            "schema_vars": schema_vars,
+        schema_vars = {
+            "psych_state": "intense",
+            "nsfw_level": "high",
+            "arc_update": True,
         }
-        supabase.table("memories").insert(update_data).execute()
-        print(f"[Anna] Stored final memory: {anna_reply[:100]}...")
+        supabase.table("memories").insert(
+            {
+                "user_id": session_id,
+                "transcript": user_transcript,
+                "reply": anna_reply,
+                "schema_vars": schema_vars,
+            }
+        ).execute()
+        print(f"[Anna] ✅ Stored memory: {anna_reply[:100]}")
         return
 
     if event_type == "UserTranscriptionReceived":
         user_transcript = data.get("text", "")
         if not user_transcript.strip():
-            print("[Anna] Empty transcription text → skipping.")
+            print("[Anna] Empty transcription text — skipping.")
             return
-        print(f"[Anna] New transcription: {user_transcript[:60]}...")
-
+        print(f"[Anna] 🎤 Transcription: {user_transcript[:60]}...")
         grok_response = grok_client.chat.completions.create(
             model="grok-4-fast",
-            messages=[{"role": "system", "content": system_prompt},
-                      {"role": "user", "content": user_transcript}],
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_transcript},
+            ],
             max_tokens=450,
             temperature=0.85,
         )
         anna_reply = grok_response.choices[0].message.content.strip()
-        schema_vars = {"psych_state": "intense", "nsfw_level": "high", "arc_update": True}
-
+        schema_vars = {
+            "psych_state": "intense",
+            "nsfw_level": "high",
+            "arc_update": True,
+        }
         supabase.table("memories").insert(
-            {"user_id": session_id, "transcript": user_transcript,
-             "reply": anna_reply, "schema_vars": schema_vars}
+            {
+                "user_id": session_id,
+                "transcript": user_transcript,
+                "reply": anna_reply,
+                "schema_vars": schema_vars,
+            }
         ).execute()
-        print(f"[Anna] Generated live reply: {anna_reply[:100]}...")
+        print(f"[Anna] 💬 Reply: {anna_reply[:100]}")
         await send_tts(anna_reply)
         return
 
-
-# -----------------------------
-# --- FastAPI Routes ---
-# -----------------------------
+# ==========================================================
+#  FastAPI Routes
+# ==========================================================
 @app.get("/")
 async def root():
     return {"status": "online", "agent": "Anna", "endpoint": "/handle_convo"}
@@ -205,17 +260,16 @@ async def handle_convo(request: Request):
         return JSONResponse(status_code=403, content={"error": "Invalid webhook secret"})
     try:
         payload = await request.json()
-        print(f"[Webhook] Received: {json.dumps(payload)[:300]}...")
+        print(f"[Webhook] Incoming: {json.dumps(payload)[:300]}...")
         asyncio.create_task(handle_webhook_event(payload))
         return {"status": "accepted"}
     except Exception as e:
-        print(f"[Webhook] Error: {str(e)}")
+        print(f"[Webhook] ❌ {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})
 
-
-# -----------------------------
-# --- Startup for Render ---
-# -----------------------------
+# ==========================================================
+#  Application Entry
+# ==========================================================
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
