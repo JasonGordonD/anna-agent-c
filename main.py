@@ -116,7 +116,7 @@ async def send_tts_stream(text: str, pcm_sink: rtc.AudioSource):
     async with httpx.AsyncClient(timeout=30.0) as hc:
         headers = {
             "Authorization": f"Bearer {CARTESIA_API_KEY}",
-            "Cartesia-Version": "2024-03-15"
+            "Cartesia-Version": "2025-04-16"
         }
         r = await hc.post(
             "https://api.cartesia.ai/v1/tts/credentials",
