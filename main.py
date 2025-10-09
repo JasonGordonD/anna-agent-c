@@ -1,15 +1,18 @@
 import os
 import json
 import asyncio
+import aiohttp
+import httpx
+from datetime import timedelta
 import logging
 from fastapi import FastAPI, Request, HTTPException
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from livekit import rtc
 from livekit.api import AccessToken, VideoGrants
-from livekit_plugins.cartesia import CartesiaSpeechSynthesizer  # Import plugin
+import base64
 
-# ──────────────────────── CONFIG ────────────────────────
+# ───────────────────────── CONFIG ─────────────────────────
 load_dotenv(override=True)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
@@ -22,7 +25,6 @@ def _env(name: str, required: bool = True) -> str:
     return val
 
 CARTESIA_API_KEY = _env("CARTESIA_API_KEY")
-CARTESIA_VERSION = _env("CARTESIA_VERSION")  # e.g., 2025-04-16
 LIVEKIT_URL = _env("LIVEKIT_URL")
 LIVEKIT_API_KEY = _env("LIVEKIT_API_KEY")
 LIVEKIT_API_SECRET = _env("LIVEKIT_API_SECRET")
@@ -31,17 +33,17 @@ SUPABASE_KEY = _env("SUPABASE_KEY")
 WEBHOOK_SECRET = _env("WEBHOOK_SECRET")
 GROK_API_KEY = _env("GROK_API_KEY")
 GROK_API_URL = _env("GROK_API_URL")
-log.info(f"[Config] All environment variables loaded.")
+log.info("[Config] All environment variables loaded.")
 
-# ──────────────────────── SUPABASE ────────────────────────
+# ───────────────────────── SUPABASE ─────────────────────────
 try:
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
     log.info("[Supabase] ✅ Connected")
 except Exception as e:
     supabase = None
-    log.error(f"[Supabase] ❌ Connection failed: {e}. Check your SUPABASE_URL and SUPABASE_KEY.")
+    log.error(f"[Supabase] ❌ Connection failed: {e}")
 
-# ──────────────────────── FASTAPI ────────────────────────
+# ───────────────────────── FASTAPI ─────────────────────────
 app = FastAPI()
 
 @app.on_event("startup")
@@ -50,9 +52,14 @@ async def on_startup():
 
 @app.get("/ping")
 async def ping():
-    return {"status": "ok", "cartesia": bool(CARTESIA_API_KEY), "livekit": bool(LIVEKIT_API_KEY), "grok": bool(GROK_API_KEY)}
+    return {
+        "status": "ok",
+        "cartesia": bool(CARTESIA_API_KEY),
+        "livekit": bool(LIVEKIT_API_KEY),
+        "grok": bool(GROK_API_KEY)
+    }
 
-# ──────────────────────── HELPERS ────────────────────────
+# ───────────────────────── HELPERS ─────────────────────────
 SAMPLE_RATE = 44100
 NUM_CHANNELS = 1
 
@@ -70,7 +77,7 @@ def _safe_log_event(event: str, status: str):
     except Exception as e:
         log.error(f"[Supabase] ❌ Logging failed: {e}")
 
-# ──────────────────────── LIVEKIT + CARTESIA ────────────────────────
+# ───────────────────────── LIVEKIT TOKEN BUILDER ─────────────────────────
 def _build_livekit_join_token(identity: str, room: str) -> str:
     grants = VideoGrants(
         room_join=True,
@@ -85,7 +92,7 @@ def _build_livekit_join_token(identity: str, room: str) -> str:
         .with_grants(grants) \
         .with_ttl(timedelta(seconds=3600)) \
         .to_jwt()
-    log.info(f"[LiveKit] 🎫 Token successfully generated for {identity}")
+    log.info(f"[LiveKit] 🎫 Token generated for {identity}")
     return token
 
 async def connect_livekit_room(identity="anna", room_name="anna"):
@@ -94,7 +101,8 @@ async def connect_livekit_room(identity="anna", room_name="anna"):
     room = rtc.Room()
 
     @room.on("participant_connected")
-    def on_participant_connected(p): log.info(f"[LiveKit] 👥 {p.identity} joined")
+    def on_participant_connected(p): 
+        log.info(f"[LiveKit] 👥 {p.identity} joined")
 
     jwt_token = _build_livekit_join_token(identity, room_name)
     log.info("[LiveKit] 🔗 Connecting to room…")
@@ -104,31 +112,49 @@ async def connect_livekit_room(identity="anna", room_name="anna"):
         await room.local_participant.publish_track(track)
         log.info("[LiveKit] ✅ Connected & published audio track.")
     except Exception as e:
-        log.error(f"[LiveKit] ❌ RTC connection failed: {str(e)}")
+        log.error(f"[LiveKit] ❌ RTC connection failed: {e}")
         raise
     return room, source
 
-# Use Cartesia plugin for TTS
-async def send_tts_stream(text: str, pcm_sink: rtc.AudioSource):
-    synthesizer = CartesiaSpeechSynthesizer(
-        api_key=CARTESIA_API_KEY,
-        version=CARTESIA_VERSION,
-        sample_rate=SAMPLE_RATE,
-        voice_id="9c7dc287-1354-4fcc-a706-377f9a44e238"  # Match your original
-    )
-    log.info("[Cartesia] 🔊 Initializing TTS synthesizer")
-    try:
-        await synthesizer.start(pcm_sink)
-        await synthesizer.speak(text)
-        log.info("[Cartesia] ✅ TTS stream completed")
-    except Exception as e:
-        log.error(f"[Cartesia] ❌ TTS synthesis failed: {str(e)}")
-        raise
-    finally:
-        await synthesizer.stop()
-        log.info("[Cartesia] ✅ Synthesizer stopped")
+# ───────────────────────── CARTESIA STREAM ─────────────────────────
+async def stream_tts_to_livekit(text: str, pcm_sink: rtc.AudioSource):
+    url = f"wss://api.cartesia.ai/tts/websocket?api_key={CARTESIA_API_KEY}&cartesia_version=2025-04-16"
+    voice_id = "9c7dc287-1354-4fcc-a706-377f9a44e238"  # Verified voice
+    model_id = "sonic-2"
 
-# ──────────────────────── GROK ────────────────────────
+    async with aiohttp.ClientSession() as session:
+        async with session.ws_connect(url) as ws:
+            request = {
+                "context_id": "livekit-session",
+                "model_id": model_id,
+                "transcript": text,
+                "voice": {"mode": "id", "id": voice_id},
+                "output_format": {
+                    "container": "raw",
+                    "encoding": "pcm_s16le",
+                    "sample_rate": SAMPLE_RATE
+                }
+            }
+
+            await ws.send_str(json.dumps(request))
+            log.info("[Cartesia] 🔊 TTS request sent")
+
+            async for msg in ws:
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    payload = json.loads(msg.data)
+                    if payload.get("type") == "chunk":
+                        data_b64 = payload.get("data")
+                        if data_b64:
+                            pcm_bytes = base64.b64decode(data_b64)
+                            pcm_sink.capture_frame(pcm_bytes)
+                    if payload.get("done") is True:
+                        log.info("[Cartesia] ✅ Stream complete.")
+                        break
+                elif msg.type == aiohttp.WSMsgType.ERROR:
+                    log.error(f"[Cartesia] WebSocket error: {ws.exception()}")
+                    break
+
+# ───────────────────────── GROK ANALYTICS ─────────────────────────
 async def push_to_grok(session_id, transcript):
     async with httpx.AsyncClient() as client:
         payload = {
@@ -140,18 +166,13 @@ async def push_to_grok(session_id, transcript):
         response.raise_for_status()
         log.info(f"[Grok] ✅ Analytics pushed for session {session_id}")
 
-# ──────────────────────── HANDLER ────────────────────────
+# ───────────────────────── MAIN HANDLER ─────────────────────────
 @app.post("/handle_convo")
 async def handle_convo(payload: dict, request: Request):
     _verify_webhook(request)
     log.info(f"[Webhook] Incoming: {payload}")
     event_type = payload.get("type")
     req_id = payload.get("request_id", "unknown")
-
-    # Idempotency check: Skip if already processed
-    if supabase and supabase.table("memories").select("request_id").eq("request_id", req_id).execute().data:
-        log.info(f"[Webhook] Skipping duplicate request_id: {req_id}")
-        return {"status": "ignored"}
 
     if event_type == "call_started":
         log.info(f"[Webhook] Handling event 'call_started' for {req_id}")
@@ -161,9 +182,12 @@ async def handle_convo(payload: dict, request: Request):
         room = None
         try:
             room, source = await connect_livekit_room(identity="anna", room_name="anna")
-            await send_tts_stream("Alo?", source)
+            await stream_tts_to_livekit(
+                "Hello world, this is Anna speaking through Cartesia and LiveKit.",
+                source
+            )
         except Exception as e:
-            log.error(f"[LiveKit/Cartesia] ❌ Connection or TTS failed: {e}")
+            log.error(f"[LiveKit] ❌ Connection failed: {e}")
             raise
         finally:
             if room:
@@ -177,12 +201,12 @@ async def handle_convo(payload: dict, request: Request):
     elif event_type == "call_completed":
         log.info(f"[Webhook] Handling event 'call_completed' for {req_id}")
         _safe_log_event(req_id, "call_completed")
-        await push_to_grok(req_id, "Mock transcript")  # Replace with real transcript
+        await push_to_grok(req_id, "Mock transcript")
         return {"status": "completed"}
 
     return {"status": "ignored"}
 
-# ──────────────────────── ENTRY ────────────────────────
+# ───────────────────────── ENTRY ─────────────────────────
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
